@@ -131,10 +131,12 @@ public class StarlarkOptionsParser {
   // require multiple rounds of parsing to fit starlark-defined options into native option format.
   @VisibleForTesting
   public void parse(ExtendedEventHandler eventHandler) throws OptionsParsingException {
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: enter"));
     ImmutableList.Builder<String> residue = new ImmutableList.Builder<>();
     // Map of <option name (label), <unparsed option value, loaded option>>.
     Multimap<String, Pair<String, Target>> unparsedOptions = LinkedListMultimap.create();
 
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before nativeOptionsParser.getPreDoubleDashResidue()"));
     // sort the old residue into starlark flags and legitimate residue
     for (String arg : nativeOptionsParser.getPreDoubleDashResidue()) {
       // TODO(bazel-team): support single dash options?
@@ -145,15 +147,25 @@ public class StarlarkOptionsParser {
 
       parseArg(arg, unparsedOptions, eventHandler);
     }
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after nativeOptionsParser.getPreDoubleDashResidue()"));
 
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before nativeOptionsParser.getPostDoubleDashResidue()"));
     List<String> postDoubleDashResidue = nativeOptionsParser.getPostDoubleDashResidue();
     residue.addAll(postDoubleDashResidue);
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after nativeOptionsParser.getPostDoubleDashResidue()"));
+
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before nativeOptionsParser.setResidue(residue.build(), postDoubleDashResidue);"));
     nativeOptionsParser.setResidue(residue.build(), postDoubleDashResidue);
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after nativeOptionsParser.setResidue(residue.build(), postDoubleDashResidue);"));
+
 
     if (unparsedOptions.isEmpty()) {
       return;
     }
 
+
+
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before unparsedOptions.entries()"));
     // Map of flag label as a string to its loaded target and set value after parsing.
     HashMap<String, Pair<Target, Object>> buildSettingWithTargetAndValue = new HashMap<>();
     for (Map.Entry<String, Pair<String, Target>> option : unparsedOptions.entries()) {
@@ -193,7 +205,9 @@ public class StarlarkOptionsParser {
       }
       buildSettingWithTargetAndValue.put(loadedFlag, Pair.of(buildSettingTarget, value));
     }
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after unparsedOptions.entries()"));
 
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before buildSettingWithTargetAndValue.keySet()"));
     Map<String, Object> parsedOptions = new HashMap<>();
     for (String buildSetting : buildSettingWithTargetAndValue.keySet()) {
       Pair<Target, Object> buildSettingAndFinalValue =
@@ -224,8 +238,13 @@ public class StarlarkOptionsParser {
         }
       }
     }
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after buildSettingWithTargetAndValue.keySet()"));
+
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: before nativeOptionsParser.setStarlarkOptions"));
     nativeOptionsParser.setStarlarkOptions(ImmutableMap.copyOf(parsedOptions));
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: after nativeOptionsParser.setStarlarkOptions"));
     this.starlarkOptions.putAll(parsedOptions);
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser: leave"));
   }
 
   private void parseArg(
@@ -233,6 +252,7 @@ public class StarlarkOptionsParser {
       Multimap<String, Pair<String, Target>> unparsedOptions,
       ExtendedEventHandler eventHandler)
       throws OptionsParsingException {
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.parseArg: enter"));
     int equalsAt = arg.indexOf('=');
     String name = equalsAt == -1 ? arg.substring(2) : arg.substring(2, equalsAt);
     if (name.trim().isEmpty()) {
@@ -272,16 +292,19 @@ public class StarlarkOptionsParser {
         throw new OptionsParsingException("Expected value after " + arg);
       }
     }
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.parseArg: leave"));
   }
 
   private Target loadBuildSetting(String targetToBuild, ExtendedEventHandler eventHandler)
       throws OptionsParsingException {
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.loadBuildSetting: enter"));
     if (buildSettings.containsKey(targetToBuild)) {
       return buildSettings.get(targetToBuild);
     }
 
     Target buildSetting;
     try {
+      reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.loadTargetPatternsWithoutFilters: before"));
       TargetPatternPhaseValue result =
           skyframeExecutor.loadTargetPatternsWithoutFilters(
               reporter,
@@ -289,6 +312,7 @@ public class StarlarkOptionsParser {
               relativeWorkingDirectory,
               SkyframeExecutor.DEFAULT_THREAD_COUNT,
               /*keepGoing=*/ false);
+      reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.loadTargetPatternsWithoutFilters: after"));
       buildSetting =
           Iterables.getOnlyElement(
               result.getTargets(eventHandler, skyframeExecutor.getPackageManager()));
@@ -302,6 +326,7 @@ public class StarlarkOptionsParser {
       throw new OptionsParsingException("Unrecognized option: " + targetToBuild, targetToBuild);
     }
     buildSettings.put(targetToBuild, buildSetting);
+    reporter.handle(Event.info(java.time.LocalTime.now().toString() + " StarlarkOptionsParser.loadBuildSetting: leave"));
     return buildSetting;
   }
 

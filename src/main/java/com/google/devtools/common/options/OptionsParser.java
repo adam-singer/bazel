@@ -26,6 +26,9 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.MoreCollectors;
 import com.google.common.escape.Escaper;
+//import com.google.devtools.build.lib.events.Event;
+//import com.google.devtools.build.lib.profiler.Profiler;
+//import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.common.options.OptionsParserImpl.OptionsParserImplResult;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -751,11 +754,22 @@ public class OptionsParser implements OptionsParsingResult {
 
   @Override
   public List<String> getPreDoubleDashResidue() {
-    return postDoubleDashResidue.isEmpty()
-        ? ImmutableList.copyOf(residue)
-        : residue.stream()
-            .filter(residue -> !postDoubleDashResidue.contains(residue))
-            .collect(toImmutableList());
+    List<String> ret = null;
+
+//    try (SilentCloseable closeable =
+//             Profiler.instance().profile("getPreDoubleDashResidue")) {
+    System.out.println(java.time.LocalTime.now().toString() + "getPreDoubleDashResidue: enter ");
+      ret = postDoubleDashResidue.isEmpty()
+          ? ImmutableList.copyOf(residue)
+          : residue.stream()
+          .filter(residue -> !postDoubleDashResidue.contains(residue))
+          .collect(toImmutableList());
+//    }
+    System.out.println(java.time.LocalTime.now().toString() + "getPreDoubleDashResidue: leave ");
+
+    System.out.println("ret="+ret);
+
+    return ret;
   }
 
   public List<String> getPostDoubleDashResidue() {

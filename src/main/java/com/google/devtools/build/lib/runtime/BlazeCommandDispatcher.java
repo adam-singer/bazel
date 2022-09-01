@@ -43,6 +43,7 @@ import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.profiler.MemoryProfiler;
 import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
 import com.google.devtools.build.lib.server.FailureDetails;
@@ -553,21 +554,32 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
           reporter.handle(Event.error(e.getMessage()));
           earlyExitCode = e.getDetailedExitCode();
         }
-        if (!earlyExitCode.isSuccess()) {
-          replayEarlyExitEvents(
-              outErr,
-              optionHandler,
-              storedEventHandler,
-              env,
-              new NoBuildEvent(
-                  commandName, firstContactTime, false, true, env.getCommandId().toString()));
-          result = BlazeCommandResult.detailedExitCode(earlyExitCode);
-          return result;
+
+        try (SilentCloseable closeable =
+                 Profiler.instance().profile("earlyExitCode.isSuccess")) {
+
+          if (!earlyExitCode.isSuccess()) {
+            replayEarlyExitEvents(
+                outErr,
+                optionHandler,
+                storedEventHandler,
+                env,
+                new NoBuildEvent(
+                    commandName, firstContactTime, false, true, env.getCommandId().toString()));
+            result = BlazeCommandResult.detailedExitCode(earlyExitCode);
+            return result;
+          }
         }
       }
 
-      // Parse starlark options.
+      try (SilentCloseable closeable =
+               Profiler.instance().profile("parse_starlark_options")) {
+        // This happens relatively fast.. then the code takes a long time..
+        reporter.handle(Event.info("Parse starlark options: before"));
+        // Parse starlark options.
+        // This is the code that is taking a really long time parseStarlarkOptions
       earlyExitCode = optionHandler.parseStarlarkOptions(env, storedEventHandler);
+      reporter.handle(Event.info("Parse starlark options: after exit code"));
       if (!earlyExitCode.isSuccess()) {
         replayEarlyExitEvents(
             outErr,
@@ -577,12 +589,21 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
             new NoBuildEvent(
                 commandName, firstContactTime, false, true, env.getCommandId().toString()));
         result = BlazeCommandResult.detailedExitCode(earlyExitCode);
+        reporter.handle(Event.info("Parse starlark options: return result = " + result));
         return result;
       }
+
+        reporter.handle(Event.info("Parse starlark options: after !earlyExitCode.isSuccess() = " + !earlyExitCode.isSuccess()));
+      }
+
+      reporter.handle(Event.info("command=" + command));
+
+
       options = optionHandler.getOptionsResult();
 
       // Run the command.
       result = command.exec(env, options);
+
 
       DetailedExitCode moduleExitCode = env.precompleteCommand(result.getDetailedExitCode());
       // If Blaze did not suffer an infrastructure failure, check for errors in modules.
@@ -615,12 +636,20 @@ public class BlazeCommandDispatcher implements CommandDispatcher {
       result = BlazeCommandResult.createShutdown(crash);
       return result;
     } finally {
-      if (needToCallAfterCommand) {
-        BlazeCommandResult newResult = runtime.afterCommand(env, result);
-        if (!newResult.equals(result)) {
-          logger.atWarning().log("afterCommand yielded different result: %s %s", result, newResult);
+      //try (SilentCloseable c = Profiler.instance().profile(ProfilerTask.INFO, "my runtime.afterCommand")) {
+
+        Profiler.instance().logSimpleTask(Profiler.nanoTimeMaybe(), ProfilerTask.INFO, "log simple task");
+        if (needToCallAfterCommand) {
+          BlazeCommandResult newResult = runtime.afterCommand(env, result);
+          if (!newResult.equals(result)) {
+            logger.atWarning().log("afterCommand yielded different result: %s %s", result,
+                newResult);
+          }
         }
-      }
+
+        //Profiler.instance().logSimpleTask(Profiler.nanoTimeMaybe(), ProfilerTask.INFO, "log simple task end");
+
+      //}
 
       try {
         Profiler.instance().stop();

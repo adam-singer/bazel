@@ -273,11 +273,11 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory, Configur
   // the number of cores and use that as the thread-pool size for CPU-bound operations.
   // I just bumped this to 200 to get reasonable execution phase performance; that may cause
   // significant overhead for CPU-bound processes (i.e. analysis). [skyframe-analysis]
-  public static final int DEFAULT_THREAD_COUNT =
+  public static final int DEFAULT_THREAD_COUNT = 2;
       // Reduce thread count while running tests of Bazel. Test cases are typically small, and large
       // thread pools vying for a relatively small number of CPU cores may induce non-optimal
       // performance.
-      TestType.isInTest() ? 5 : 200;
+      // TestType.isInTest() ? 5 : 200;
 
   // The limit of how many times we will traverse through an exception chain when catching a
   // target parsing exception.
@@ -2969,8 +2969,10 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory, Configur
       throws InterruptedException, TargetParsingException {
     Stopwatch timer = Stopwatch.createStarted();
     eventHandler.post(new LoadingPhaseStartedEvent(packageProgress));
+    eventHandler.handle(Event.info(java.time.LocalTime.now().toString() + " SkyframeExecutor: getTargetPatternPhaseValue enter" + packageProgress));
     EvaluationResult<TargetPatternPhaseValue> evalResult =
         evaluate(ImmutableList.of(key), keepGoing, threadCount, eventHandler);
+    eventHandler.handle(Event.info(java.time.LocalTime.now().toString() + " SkyframeExecutor: getTargetPatternPhaseValue leave" + evalResult));
     tryThrowTargetParsingException(eventHandler, targetPatterns, key, evalResult);
     eventHandler.post(new TargetParsingPhaseTimeEvent(timer.stop().elapsed().toMillis()));
     return evalResult.get(key);
