@@ -18,6 +18,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
+import com.google.devtools.build.lib.actions.PathStripper.ActionStager;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.exec.SpawnInputExpander;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
@@ -77,6 +78,10 @@ public interface RemotePathResolver {
     return outputPathToLocalPath(outputPath);
   }
 
+  default RemotePathResolver withActionStager(ActionStager actionStager) {
+    return this;
+  }
+
   /** Creates the default {@link RemotePathResolver}. */
   static RemotePathResolver createDefault(Path execRoot) {
     return new DefaultRemotePathResolver(execRoot);
@@ -89,9 +94,15 @@ public interface RemotePathResolver {
   class DefaultRemotePathResolver implements RemotePathResolver {
 
     private final Path execRoot;
+    private final ActionStager actionStager;
 
     public DefaultRemotePathResolver(Path execRoot) {
+      this(execRoot, ActionStager.NOOP);
+    }
+
+    private DefaultRemotePathResolver(Path execRoot, ActionStager actionStager) {
       this.execRoot = execRoot;
+      this.actionStager = actionStager;
     }
 
     @Override
@@ -114,6 +125,7 @@ public interface RemotePathResolver {
           .walkInputs(
               spawn,
               context.getArtifactExpander(),
+              spawn.getActionStager(),
               PathFragment.EMPTY_FRAGMENT,
               context.getMetadataProvider(),
               visitor);
@@ -121,22 +133,27 @@ public interface RemotePathResolver {
 
     @Override
     public String localPathToOutputPath(Path path) {
-      return path.relativeTo(execRoot).getPathString();
+      return actionStager.strip(path.relativeTo(execRoot)).getPathString();
     }
 
     @Override
     public String localPathToOutputPath(PathFragment execPath) {
-      return execPath.getPathString();
+      return actionStager.strip(execPath).getPathString();
     }
 
     @Override
     public Path outputPathToLocalPath(String outputPath) {
-      return execRoot.getRelative(outputPath);
+      return execRoot.getRelative(actionStager.unstrip(PathFragment.create(outputPath)));
     }
 
     @Override
     public Path outputPathToLocalPath(ActionInput actionInput) {
       return ActionInputHelper.toInputPath(actionInput, execRoot);
+    }
+
+    @Override
+    public RemotePathResolver withActionStager(ActionStager actionStager) {
+      return new DefaultRemotePathResolver(execRoot, actionStager);
     }
   }
 
@@ -153,6 +170,7 @@ public interface RemotePathResolver {
 
     private final Path execRoot;
     private final boolean incompatibleRemoteOutputPathsRelativeToInputRoot;
+    private final ActionStager actionStager;
 
     public SiblingRepositoryLayoutResolver(Path execRoot) {
       this(execRoot, /* incompatibleRemoteOutputPathsRelativeToInputRoot= */ false);
@@ -160,9 +178,16 @@ public interface RemotePathResolver {
 
     public SiblingRepositoryLayoutResolver(
         Path execRoot, boolean incompatibleRemoteOutputPathsRelativeToInputRoot) {
+      this(execRoot, incompatibleRemoteOutputPathsRelativeToInputRoot, ActionStager.NOOP);
+    }
+
+    private SiblingRepositoryLayoutResolver(
+        Path execRoot, boolean incompatibleRemoteOutputPathsRelativeToInputRoot,
+        ActionStager actionStager) {
       this.execRoot = execRoot;
       this.incompatibleRemoteOutputPathsRelativeToInputRoot =
           incompatibleRemoteOutputPathsRelativeToInputRoot;
+      this.actionStager = actionStager;
     }
 
     @Override
@@ -188,6 +213,7 @@ public interface RemotePathResolver {
           .walkInputs(
               spawn,
               context.getArtifactExpander(),
+              spawn.getActionStager(),
               PathFragment.create(checkNotNull(getWorkingDirectory())),
               context.getMetadataProvider(),
               visitor);
@@ -203,7 +229,7 @@ public interface RemotePathResolver {
 
     @Override
     public String localPathToOutputPath(Path path) {
-      return path.relativeTo(getBase()).getPathString();
+      return actionStager.strip(path.relativeTo(getBase())).getPathString();
     }
 
     @Override
@@ -213,12 +239,18 @@ public interface RemotePathResolver {
 
     @Override
     public Path outputPathToLocalPath(String outputPath) {
-      return getBase().getRelative(outputPath);
+      return getBase().getRelative(actionStager.unstrip(PathFragment.create(outputPath)));
     }
 
     @Override
     public Path outputPathToLocalPath(ActionInput actionInput) {
       return ActionInputHelper.toInputPath(actionInput, execRoot);
+    }
+
+    @Override
+    public RemotePathResolver withActionStager(ActionStager actionStager) {
+      return new SiblingRepositoryLayoutResolver(execRoot,
+          incompatibleRemoteOutputPathsRelativeToInputRoot, actionStager);
     }
   }
 }

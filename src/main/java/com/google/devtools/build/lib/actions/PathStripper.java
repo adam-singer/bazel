@@ -16,13 +16,17 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.actions.Artifact.ArtifactPathMapper;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
+import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.starlarkbuildapi.FileRootApi;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.HashSet;
 import java.util.List;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
 
 /**
  * Main logic for experimental config-stripped execution paths:
@@ -71,6 +75,37 @@ import javax.annotation.Nullable;
  * NestedSet, Artifact, BuildConfigurationValue)}.
  */
 public final class PathStripper {
+
+  public interface PathMapper extends ActionStager, CommandAdjuster {
+
+    PathMapper NOOP = new PathMapper() {
+      @Override
+      public String getExecPathString(ActionInput artifact) {
+        return artifact.getExecPathString();
+      }
+
+      @Override
+      public PathFragment strip(PathFragment execPath) {
+        return execPath;
+      }
+
+      @Override
+      public String strip(DerivedArtifact artifact) {
+        return getExecPathString(artifact);
+      }
+
+      @Override
+      public List<String> stripCustomStarlarkArgs(List<String> args) {
+        return args;
+      }
+
+      @Override
+      public boolean isNoop() {
+        return true;
+      }
+    };
+  }
+
   /**
    * Support for stripping config paths from an action's inputs and outputs.
    *
@@ -89,6 +124,18 @@ public final class PathStripper {
 
     /** Same as {@link #getExecPathString(ActionInput)} but for a {@link PathFragment}. */
     PathFragment strip(PathFragment execPath);
+
+    default PathFragment unstrip(PathFragment execPath) {
+      return execPath;
+    }
+
+    default PathFragment stripForRunfiles(PathFragment runfilesDir, PathFragment execPath) {
+      return execPath;
+    }
+
+    default boolean isNoop() {
+      return false;
+    }
 
     /**
      * Creates a new action stager for executor implementation logic to use.
@@ -115,6 +162,11 @@ public final class PathStripper {
           @Override
           public PathFragment strip(PathFragment execPath) {
             return execPath;
+          }
+
+          @Override
+          public boolean isNoop() {
+            return true;
           }
         };
 
@@ -162,6 +214,60 @@ public final class PathStripper {
      * actions that we know we want to strip.
      */
     List<String> stripCustomStarlarkArgs(List<String> args);
+
+    /**
+     * Creates a an {@link ArtifactPathMapper} that can be set on a Starlark thread's semantics
+     * object to automatically rewrite paths returned by the File API in map_each callbacks.
+     */
+    default ArtifactPathMapper toArtifactPathMapper() {
+      return new ArtifactPathMapper() {
+        private PathFragment getMappedExecPath(Artifact artifact) throws EvalException {
+          if (!(artifact instanceof DerivedArtifact)) {
+            return artifact.getExecPath();
+          }
+          try {
+            if (!(artifact instanceof TreeFileArtifact)) {
+              return strip(artifact.getExecPath());
+            }
+            return strip(artifact.getParent().getExecPath()).getRelative(
+                artifact.getParentRelativePath());
+          } catch (IllegalArgumentException e) {
+            // Thrown by PathFragment#relativeTo if the artifact to map is neither a declared input
+            // nor under the output directory.
+            throw new EvalException(String.format(
+                "Failed to compute mapped path for %s. Please ensure that it is a declared input "
+                    + "of the failing action.",
+                artifact), e);
+          }
+        }
+
+        @Override
+        public String getMappedDirname(Artifact artifact) throws EvalException {
+          PathFragment mappedParent = getMappedExecPath(artifact).getParentDirectory();
+          return (mappedParent == null) ? "/" : mappedParent.getSafePathString();
+        }
+
+        @Override
+        public String getMappedExecPathString(Artifact artifact) throws EvalException {
+          return getMappedExecPath(artifact).getPathString();
+        }
+
+        @Override
+        public FileRootApi getMappedRoot(Artifact artifact) throws EvalException {
+          if (!(artifact instanceof DerivedArtifact)) {
+            return artifact.getRoot();
+          }
+          String mappedExecPathString = getMappedExecPath(artifact).subFragment(0,
+              artifact.getRoot().getExecPath().segmentCount()).getPathString();
+          return new FileRootApi() {
+            @Override
+            public String getExecPathString() {
+              return mappedExecPathString;
+            }
+          };
+        }
+      };
+    }
 
     /**
      * Creates a new command adjuster for action implementation logic to use.

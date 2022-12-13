@@ -51,11 +51,15 @@ import com.google.devtools.build.lib.actions.EmptyRunfilesSupplier;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.ParamFileInfo;
+import com.google.devtools.build.lib.actions.PathStripper.ActionStager;
 import com.google.devtools.build.lib.actions.PathStripper.CommandAdjuster;
+import com.google.devtools.build.lib.actions.PathStripper.PathMapper;
+import com.google.devtools.build.lib.actions.PrecomputedPathMapper;
 import com.google.devtools.build.lib.actions.ResourceSetOrBuilder;
 import com.google.devtools.build.lib.actions.RunfilesSupplier;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.actions.extra.EnvironmentVariable;
 import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
 import com.google.devtools.build.lib.actions.extra.SpawnInfo;
@@ -67,6 +71,8 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.exec.SpawnStrategyResolver;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
@@ -121,6 +127,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
   private final Artifact primaryOutput;
   private final Consumer<Pair<ActionExecutionContext, List<SpawnResult>>> resultConsumer;
   private final boolean stripOutputPaths;
+  private final boolean applyContentBasedPathMapping;
 
   /**
    * Constructs a SpawnAction using direct initialization arguments.
@@ -174,7 +181,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         false,
         null,
         null,
-        /*stripOutputPaths=*/ false);
+        /*stripOutputPaths=*/ false,
+        /*applyContentBasedPathMapping=*/false);
   }
 
   /**
@@ -219,7 +227,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       boolean executeUnconditionally,
       ExtraActionInfoSupplier extraActionInfoSupplier,
       Consumer<Pair<ActionExecutionContext, List<SpawnResult>>> resultConsumer,
-      boolean stripOutputPaths) {
+      boolean stripOutputPaths,
+      boolean applyContentBasedPathMapping) {
     super(owner, tools, inputs, runfilesSupplier, outputs, env);
     this.primaryOutput = primaryOutput;
     this.resourceSetOrBuilder = resourceSetOrBuilder;
@@ -236,6 +245,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     this.extraActionInfoSupplier = extraActionInfoSupplier;
     this.resultConsumer = resultConsumer;
     this.stripOutputPaths = stripOutputPaths;
+    this.applyContentBasedPathMapping = applyContentBasedPathMapping;
   }
 
   @Override
@@ -392,7 +402,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         /*additionalInputs=*/ ImmutableList.of(),
         /*filesetMappings=*/ ImmutableMap.of(),
         /*reportOutputs=*/ true,
-        stripOutputPaths);
+        stripOutputPaths,
+        ActionStager.NOOP);
   }
 
   /**
@@ -403,6 +414,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       throws CommandLineExpansionException, InterruptedException {
     return getSpawn(
         actionExecutionContext.getArtifactExpander(),
+        actionExecutionContext.getMetadataHandler(),
         actionExecutionContext.getClientEnv(),
         /*envResolved=*/ false,
         actionExecutionContext.getTopLevelFilesets(),
@@ -419,16 +431,30 @@ public class SpawnAction extends AbstractAction implements CommandAction {
    */
   protected Spawn getSpawn(
       ArtifactExpander artifactExpander,
+      MetadataHandler metadataHandler,
       Map<String, String> env,
       boolean envResolved,
       Map<Artifact, ImmutableList<FilesetOutputSymlink>> filesetMappings,
       boolean reportOutputs)
       throws CommandLineExpansionException, InterruptedException {
+    PathMapper pathMapper;
+    CommandAdjuster pathStripper;
+    if (applyContentBasedPathMapping) {
+      try (SilentCloseable ignored = Profiler.instance()
+          .profile("PrecomputedPathMapper.createContentBased")) {
+        pathMapper = PrecomputedPathMapper.createContentBased(artifactExpander, metadataHandler,
+            getInputs(), getPrimaryOutput());
+      }
+      pathStripper = pathMapper;
+    } else {
+      pathMapper = PrecomputedPathMapper.noop();
+      pathStripper = getPathStripper();
+    }
     ExpandedCommandLines expandedCommandLines =
         commandLines.expand(
             artifactExpander,
             getPrimaryOutput().getExecPath(),
-            getPathStripper(),
+            pathStripper,
             commandLineLimits);
     return new ActionSpawn(
         ImmutableList.copyOf(expandedCommandLines.arguments()),
@@ -439,7 +465,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         expandedCommandLines.getParamFiles(),
         filesetMappings,
         reportOutputs,
-        stripOutputPaths);
+        stripOutputPaths,
+        pathMapper);
   }
 
   Spawn getSpawnForExtraAction() throws CommandLineExpansionException, InterruptedException {
@@ -466,6 +493,12 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     }
     env.addTo(fp);
     fp.addStringMap(getExecutionInfo());
+    if (applyContentBasedPathMapping) {
+      // Mapped paths may end up in the output of the action. Since they are a deterministic
+      // function of the rest of the action data, we only need to encode the scheme used to map
+      // them.
+      fp.addString("content_based_path_mapping_v1");
+    }
   }
 
   @Override
@@ -580,6 +613,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     private final ImmutableMap<String, String> effectiveEnvironment;
     private final boolean reportOutputs;
     private final boolean stripOutputPaths;
+    private final ActionStager actionStager;
 
     /**
      * Creates an ActionSpawn with the given environment variables.
@@ -596,7 +630,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         Iterable<? extends ActionInput> additionalInputs,
         Map<Artifact, ImmutableList<FilesetOutputSymlink>> filesetMappings,
         boolean reportOutputs,
-        boolean stripOutputPaths)
+        boolean stripOutputPaths,
+        ActionStager actionStager)
         throws CommandLineExpansionException {
       super(
           arguments,
@@ -616,6 +651,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       this.inputs = inputsBuilder.build();
       this.filesetMappings = filesetMappings;
       this.stripOutputPaths = stripOutputPaths;
+      this.actionStager = actionStager;
 
       // If the action environment is already resolved using the client environment, the given
       // environment variables are used as they are. Otherwise, they are used as clientEnv to
@@ -631,6 +667,11 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     @Override
     public boolean stripOutputPaths() {
       return stripOutputPaths;
+    }
+
+    @Override
+    public ActionStager getActionStager() {
+      return actionStager;
     }
 
     @Override
@@ -855,7 +896,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
           executeUnconditionally,
           extraActionInfoSupplier,
           resultConsumer,
-          stripOutputPaths);
+          stripOutputPaths,
+          /*applyContentBasedPathMapping=*/ false);
     }
 
     /**
