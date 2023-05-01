@@ -68,7 +68,7 @@ def _compile_cc_file_single_arch(repository_ctx, src_name, out_name, timeout):
         "--sdk",
         "macosx",
         "clang",
-        "-mmacosx-version-min=10.13",
+        "-mmacosx-version-min=13.3",
         "-std=c++11",
         "-lc++",
         "-O3",

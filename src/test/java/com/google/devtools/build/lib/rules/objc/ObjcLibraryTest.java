@@ -1388,7 +1388,6 @@ public class ObjcLibraryTest extends ObjcRuleTestCase {
                             .getGenfilesFragment(RepositoryName.MAIN)
                             .getSafePathString()))
                 .add("-include", "objc/some.pch")
-                .add("-fobjc-arc")
                 .add("-c", "objc/a.m")
                 .addAll(outputArgs(compileActionA.getOutputs()))
                 .build());

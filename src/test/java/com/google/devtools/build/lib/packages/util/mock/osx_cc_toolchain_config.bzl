@@ -7706,7 +7706,7 @@ def _impl(ctx):
                 ],
                 flag_groups = [
                     flag_group(
-                        flags = ["-fobjc-arc"],
+                        flags = [],
                         expand_if_available = "objc_arc",
                     ),
                 ],
